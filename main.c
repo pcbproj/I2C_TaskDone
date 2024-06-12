@@ -1,10 +1,14 @@
 /*
-I2C project for lesson
-по кнопке S1 происходит запись массива данных из 4-х  байт в I2C EEPROM, начиная с выбранной ячейки памяти.
-по кнопке S2 происходит изменение адреса в EEPROM циклически между 8-мью адресами. 
-	-- Индикация смещения на LED1-LED3.
-по кнопке S3 происходит чтение массива данных (4 байта) из EEPROM, начиная с выбранной ячейки памати и сохранение в массив
+I2C практическое задание
+записть в I2C EEPROM последовательность нажатия кнопок из 5 шт.
+После повторного включения питания МК должен считать из EEPROM эту последовательность и показывать на светодиодах
+записанную последовательность циклически.
 
+ - время ожидания новой кнопки = 3 сек
+ - Время свечения светодиода в последовательности 250 мс;
+ - Время погашенного светодиода в последовательности 250 мс;
+ - Пауза между повторами последовательностей 1 сек;
+ 
 */
 
 
@@ -13,12 +17,10 @@ I2C project for lesson
 #include "stm32f407xx.h"
 
 
-#define COUNT_1MS 1000
+#define COUNT_3S	3000
+
 #define	BTN_PRESS_CNT 4 
 
-
-#define NONE_LEDS	0
-#define ALL_LEDS	7
 
 // ------  адресация устройства на шине I2C ------------- 
 #define I2C_DEV_ADDR	0xA0 // адрес микросхемы EEPROM = 1010_0000 в бинарном виде. Используются старшие 7 бит
@@ -28,27 +30,19 @@ I2C project for lesson
 #define I2C_DEV_ADDR_WR  (I2C_DEV_ADDR + I2C_WR_BIT)	// младший бит выставляем в WR = 0
 
 // ----------- адресация внутри EEPROM -------------
-#define EEPROM_WR_START_ADDR	0x08	// запись с 1 ячейки в страницу 2
-#define EEPROM_WR_LEN			4	
+#define EEPROM_HEAD_ADDR		0x10	// запись с 1 ячейки в страницу 2
 #define EEPROM_PAGE_LEN_BYTES	8
-#define EEPROM_RD_START_ADDR	0x08	// чтение с 1 ячейки в страницу 2
-#define EEPROM_RD_LEN			4
-
-////--------- Флаги для конечного автомата -------------
-//#define IDLE			0
-//#define EEPROM_WRITE	1
-//#define EEPROM_READ		2
-//#define ADDR_INC		3
 
 
 #define BTN_CHECK_MS	10
 
 
-char i2c_tx_array[8] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };	// Массив записываетмый в EEPROM
-char i2c_rx_array[8] = {};	// Массив, куда будут читаться данные из EEPROM
+char i2c_tx_array[EEPROM_PAGE_LEN_BYTES] = {};	// Массив записываетмый в EEPROM. ограничим размером страницы
+char i2c_rx_array[EEPROM_PAGE_LEN_BYTES] = {};	// Массив, куда будут читаться данные из EEPROM. ограничим размером страницы
 
 
 uint16_t ms_count = 0;	// счетчик мс для опроса кнопок
+uint16_t wait_3c_count = 0; // счетчик для ожидания 3 сек. макс = 3000
 
 
 char S1_cnt = 0; 	 // button S1 press couter
@@ -104,11 +98,7 @@ void I2C_Init(void){
   	GPIOB -> MODER 	|= 	GPIO_MODER_MODE9_1;		// PB9 в режиме альтернативной функции
   	GPIOB -> OTYPER	|=	(GPIO_OTYPER_OT8 | GPIO_OTYPER_OT9);	// включение выводов PB8 PB9 в режим open-drain
 			   
-  	//GPIOB -> PUPDR	&=	~(GPIO_PUPDR_PUPD8 | GPIO_PUPDR_PUPD9);		// явно прописываем отключение всех подтягивающих резисторов
-																		// хотя по умолчанию они и так отключены
-  	
   	GPIOB -> PUPDR	|=	(GPIO_PUPDR_PUPD8_0 | GPIO_PUPDR_PUPD9_0);	// включаем подтягивающие pull_up резисторы
-																
   	
   	GPIOB -> AFR[1]	|=	GPIO_AFRH_AFRH0_2;	// для PB8 выбрана альтернативная ф-ия AF4 = I2C1
   	GPIOB -> AFR[1]	|=	GPIO_AFRH_AFRH1_2;	// для PB9 выбрана альтернативная ф-ия AF4 = I2C1
@@ -131,7 +121,6 @@ void I2C_Init(void){
   	// настройка частоты тактирования I2C1 = частота шины APB1 = 42 МГц
   	I2C1 -> CR1	= 0x0000; // выставляем CR1 в default value
   	I2C1 -> CR2	|=	(42 << I2C_CR2_FREQ_Pos);  // CR2_FREQ = 42 т.к. Freq_APB1 = 42MHz
-  	//I2C1 -> CR2	|=	(I2C_CR2_FREQ_5 | I2C_CR2_FREQ_3 | I2C_CR2_FREQ_1);  // CR2_FREQ = 42 пример побитной записи
   	
   	/*====== CCR вычисления: ======
 	I2C работает на частоте 100 кГц - Standard mode
@@ -199,7 +188,7 @@ void I2C_Soft_EEPROM_Reset(void){
 
 
 
-
+// функция отправки по I2C адреса устройства и операции над ним
 void I2C1_Tx_DeviceADDR(char device_address, char RW_bit){
 	I2C1 -> DR = (device_address + RW_bit);				// отправить в I2C_DR адрес устройства и бит WR
 	while((I2C1 -> SR1 & I2C_SR1_ADDR) == 0){};	// ждем флаг I2C_SR1_ADDR = 1. Пока завершится передача байта адреса
@@ -384,24 +373,15 @@ void State_Flag_Gen(void){
 
 void SysTick_Handler(void){		// прервание от Systick таймера, выполняющееся с периодом 1000 мкс
 	ms_count++;
+	wait_3c_count++;
+
 }
 
 
 int main(void) {
-
   
-	enum states {
-    	IDLE = 0,
-    	EEPROM_WRITE,
-		EEPROM_READ,
-		ADDR_INC
-	};
-
-	enum states FSM_state = IDLE;
-
-  	char eeprom_addr = 0;	// адрес чтения и записи в EEPROM
+	char eeprom_addr = 0;	// адрес чтения и записи в EEPROM
   	char addr_offset = 0;	// смещение адреса EEPROM относительно основного адреса EEPROM_RD_ADDR
-  	
   	
   	RCC_Init();
   	
@@ -419,53 +399,22 @@ int main(void) {
 	GPIOE -> BSRR |= GPIO_BSRR_BS14;
 	GPIOE -> BSRR |= GPIO_BSRR_BS15;
 
-	EEPROM_PageClear(EEPROM_RD_START_ADDR);	// предварительная очистка страницы
-											// чтобы можно было видеть записанные новые данные в массиве
+	// ======== не требуется очищать память, чтобы не стереть записанные данные ==============
+	//EEPROM_PageClear(EEPROM_HEAD_ADDR);	// предварительная очистка страницы
+
+	
+	//I2C_Write(eeprom_addr, i2c_tx_array, EEPROM_WR_LEN);
+
+	//I2C_Read(eeprom_addr, i2c_rx_array, EEPROM_RD_LEN);
+
   
 	while (1){
 		BTN_Check();		// проверка нажатия кнопок
 		
-		State_Flag_Gen();	// генерация флагов состояний для конечного автомата
+		
+		
 
 		
-		//======= FSM блок переключения по состояниям ========
-		if (EEPROM_WRITE_flag) FSM_state = EEPROM_WRITE;
-		else{
-			if (ADDR_INC_flag) FSM_state = ADDR_INC;
-			else { 
-				if (EEPROM_READ_flag) FSM_state = EEPROM_READ;
-				else FSM_state = IDLE;
-			}
-		}
-	  
-		// ======= FSM блок отработки основной логики =============
-		switch(FSM_state){
-		case IDLE:	
-			break;
-		
-		case EEPROM_WRITE:	// запись массива в EEPROM по адресу eeprom_addr
-			I2C_Write(eeprom_addr, i2c_tx_array, EEPROM_WR_LEN);	
-			EEPROM_WRITE_out = 1;
-			FSM_state = IDLE;
-			break;
-
-		case ADDR_INC:		// увеличение адреса EEPROM на 1 в пределах от EEPROM_RD_ADDR до (EEPROM_RD_ADDR + EEPROM_WR_LEN) (0x8 - 0x10)
-			if(addr_offset < EEPROM_WR_LEN) addr_offset++;
-			else addr_offset = 0;
-			ADDR_INC_out = 1;
-			FSM_state = IDLE;
-			break;
-
-		case EEPROM_READ:	// чтение массива из EEPROM из адреса eeprom_addr
-			I2C_Read(eeprom_addr, i2c_rx_array, EEPROM_RD_LEN);
-			EEPROM_READ_out = 1;
-			FSM_state = IDLE;
-			break;
-		
-		} // switch(FSM_state)
-
-		eeprom_addr = EEPROM_RD_START_ADDR + addr_offset;
-		GPIOE -> ODR = ((~(addr_offset) & 0x07) << 13);
 
 	}	// while(1)
 	  

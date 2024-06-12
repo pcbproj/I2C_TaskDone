@@ -410,6 +410,49 @@ int main(void) {
 	//	for(i=0; i<BTN_CHECK_TIME; i++){}  // wait for 10 ms
 		
 	//}
+	
+	
+	/*
+	//======= FSM блок переключения по состояниям ========
+		if (EEPROM_WRITE_flag) FSM_state = EEPROM_WRITE;
+		else{
+			if (ADDR_INC_flag) FSM_state = ADDR_INC;
+			else { 
+				if (EEPROM_READ_flag) FSM_state = EEPROM_READ;
+				else FSM_state = IDLE;
+			}
+		}
+	  
+		// ======= FSM блок отработки основной логики =============
+		switch(FSM_state){
+		case IDLE:	
+			break;
+		
+		case EEPROM_WRITE:	// запись массива в EEPROM по адресу eeprom_addr
+			I2C_Write(eeprom_addr, i2c_tx_array, EEPROM_WR_LEN);	
+			EEPROM_WRITE_out = 1;
+			FSM_state = IDLE;
+			break;
+
+		case ADDR_INC:		// увеличение адреса EEPROM на 1 в пределах от EEPROM_RD_ADDR до (EEPROM_RD_ADDR + EEPROM_WR_LEN) (0x8 - 0x10)
+			if(addr_offset < EEPROM_WR_LEN) addr_offset++;
+			else addr_offset = 0;
+			ADDR_INC_out = 1;
+			FSM_state = IDLE;
+			break;
+
+		case EEPROM_READ:	// чтение массива из EEPROM из адреса eeprom_addr
+			I2C_Read(eeprom_addr, i2c_rx_array, EEPROM_RD_LEN);
+			EEPROM_READ_out = 1;
+			FSM_state = IDLE;
+			break;
+		
+		} // switch(FSM_state)
+		
+		
+		eeprom_addr = EEPROM_RD_START_ADDR + addr_offset;
+		GPIOE -> ODR = ((~(addr_offset) & 0x07) << 13);
+	*/
   
 }
 
